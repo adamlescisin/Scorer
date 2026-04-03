@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import { Player, Game, Round } from '../types';
+import { supabase } from '../lib/supabase';
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -80,10 +80,78 @@ const SAMPLE_GAMES: Game[] = [
   },
 ];
 
+// ── Supabase helpers ──────────────────────────────────────────────────────────
+
+function dbToPlayer(row: Record<string, unknown>): Player {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    color: row.color as string,
+    createdAt: row.created_at as string,
+  };
+}
+
+function dbToGame(row: Record<string, unknown>): Game {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    gameType: row.game_type as string,
+    playerIds: row.player_ids as string[],
+    rounds: (row.rounds as Round[]) ?? [],
+    status: row.status as 'active' | 'finished',
+    createdAt: row.created_at as string,
+    finishedAt: (row.finished_at as string) ?? undefined,
+    winnerIds: (row.winner_ids as string[]) ?? undefined,
+    lowerIsBetter: (row.lower_is_better as boolean) ?? true,
+  };
+}
+
+function playerToDb(p: Player) {
+  return { id: p.id, name: p.name, color: p.color, created_at: p.createdAt };
+}
+
+function gameToDb(g: Game) {
+  return {
+    id: g.id,
+    name: g.name,
+    game_type: g.gameType,
+    player_ids: g.playerIds,
+    rounds: g.rounds,
+    status: g.status,
+    created_at: g.createdAt,
+    finished_at: g.finishedAt ?? null,
+    winner_ids: g.winnerIds ?? null,
+    lower_is_better: g.lowerIsBetter ?? true,
+  };
+}
+
+// ── localStorage helpers ──────────────────────────────────────────────────────
+
+const LS_KEY = 'scorer-storage';
+
+function lsLoad(): { players: Player[]; games: Game[] } | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function lsSave(players: Player[], games: Game[]) {
+  localStorage.setItem(LS_KEY, JSON.stringify({ players, games }));
+}
+
+// ── Store ─────────────────────────────────────────────────────────────────────
+
 interface GameState {
   players: Player[];
   games: Game[];
   darkMode: boolean;
+  loaded: boolean;
+
+  initStore: () => Promise<void>;
 
   addPlayer: (name: string, color: string) => void;
   updatePlayer: (id: string, name: string, color: string) => void;
@@ -101,126 +169,181 @@ interface GameState {
   toggleDarkMode: () => void;
 }
 
-export const useGameStore = create<GameState>()(
-  persist(
-    (set) => ({
-      players: SAMPLE_PLAYERS,
-      games: SAMPLE_GAMES,
-      darkMode: false,
+export const useGameStore = create<GameState>()((set) => ({
+  players: [],
+  games: [],
+  darkMode: localStorage.getItem('scorer-darkMode') === 'true',
+  loaded: false,
 
-      addPlayer: (name, color) =>
-        set((state) => ({
-          players: [
-            ...state.players,
-            { id: genId(), name, color, createdAt: new Date().toISOString() },
-          ],
-        })),
-
-      updatePlayer: (id, name, color) =>
-        set((state) => ({
-          players: state.players.map((p) =>
-            p.id === id ? { ...p, name, color } : p
-          ),
-        })),
-
-      deletePlayer: (id) =>
-        set((state) => ({
-          players: state.players.filter((p) => p.id !== id),
-        })),
-
-      addGame: (name, gameType, playerIds, lowerIsBetter) => {
-        const id = genId();
-        set((state) => ({
-          games: [
-            ...state.games,
-            {
-              id,
-              name,
-              gameType,
-              playerIds,
-              rounds: [],
-              status: 'active',
-              createdAt: new Date().toISOString(),
-              lowerIsBetter,
-            },
-          ],
-        }));
-        return id;
-      },
-
-      updateGame: (id, updates) =>
-        set((state) => ({
-          games: state.games.map((g) => (g.id === id ? { ...g, ...updates } : g)),
-        })),
-
-      deleteGame: (id) =>
-        set((state) => ({
-          games: state.games.filter((g) => g.id !== id),
-        })),
-
-      finishGame: (id) =>
-        set((state) => {
-          const game = state.games.find((g) => g.id === id);
-          if (!game) return state;
-
-          const totals: Record<string, number> = {};
-          for (const pid of game.playerIds) totals[pid] = 0;
-          for (const round of game.rounds) {
-            for (const s of round.scores) totals[s.playerId] = (totals[s.playerId] ?? 0) + s.score;
-          }
-
-          const sortedIds = [...game.playerIds].sort((a, b) =>
-            game.lowerIsBetter ? totals[a] - totals[b] : totals[b] - totals[a]
-          );
-          const bestScore = totals[sortedIds[0]];
-          const winnerIds = sortedIds.filter((id) => totals[id] === bestScore);
-
-          return {
-            games: state.games.map((g) =>
-              g.id === id
-                ? { ...g, status: 'finished', finishedAt: new Date().toISOString(), winnerIds }
-                : g
-            ),
-          };
-        }),
-
-      addRound: (gameId, scores) =>
-        set((state) => ({
-          games: state.games.map((g) => {
-            if (g.id !== gameId) return g;
-            const roundNumber = g.rounds.length + 1;
-            const newRound: Round = { id: genId(), roundNumber, scores };
-            return { ...g, rounds: [...g.rounds, newRound] };
-          }),
-        })),
-
-      updateRound: (gameId, roundId, scores) =>
-        set((state) => ({
-          games: state.games.map((g) => {
-            if (g.id !== gameId) return g;
-            return {
-              ...g,
-              rounds: g.rounds.map((r) =>
-                r.id === roundId ? { ...r, scores } : r
-              ),
-            };
-          }),
-        })),
-
-      deleteRound: (gameId, roundId) =>
-        set((state) => ({
-          games: state.games.map((g) => {
-            if (g.id !== gameId) return g;
-            const filtered = g.rounds.filter((r) => r.id !== roundId);
-            const renumbered = filtered.map((r, i) => ({ ...r, roundNumber: i + 1 }));
-            return { ...g, rounds: renumbered };
-          }),
-        })),
-
-      toggleDarkMode: () => set((state) => ({ darkMode: !state.darkMode })),
-    }),
-    {
-      name: 'scorer-storage',
+  initStore: async () => {
+    if (!supabase) {
+      // localStorage fallback
+      const stored = lsLoad();
+      if (stored) {
+        set({ players: stored.players, games: stored.games, loaded: true });
+      } else {
+        set({ players: SAMPLE_PLAYERS, games: SAMPLE_GAMES, loaded: true });
+        lsSave(SAMPLE_PLAYERS, SAMPLE_GAMES);
+      }
+      return;
     }
-  )
-);
+
+    // Supabase mode
+    const [{ data: pRows, error: pErr }, { data: gRows, error: gErr }] = await Promise.all([
+      supabase.from('players').select('*').order('created_at'),
+      supabase.from('games').select('*').order('created_at'),
+    ]);
+
+    if (pErr) console.error('Supabase players error:', pErr);
+    if (gErr) console.error('Supabase games error:', gErr);
+
+    let players = (pRows ?? []).map(dbToPlayer);
+    let games = (gRows ?? []).map(dbToGame);
+
+    // Seed sample data on first run
+    if (players.length === 0 && games.length === 0) {
+      await supabase.from('players').insert(SAMPLE_PLAYERS.map(playerToDb));
+      await supabase.from('games').insert(SAMPLE_GAMES.map(gameToDb));
+      players = [...SAMPLE_PLAYERS];
+      games = [...SAMPLE_GAMES];
+    }
+
+    set({ players, games, loaded: true });
+  },
+
+  addPlayer: (name, color) => {
+    const p: Player = { id: genId(), name, color, createdAt: new Date().toISOString() };
+    set((s) => {
+      const players = [...s.players, p];
+      if (!supabase) lsSave(players, s.games);
+      else supabase.from('players').insert(playerToDb(p)).then(({ error }) => { if (error) console.error(error); });
+      return { players };
+    });
+  },
+
+  updatePlayer: (id, name, color) => {
+    set((s) => {
+      const players = s.players.map((p) => (p.id === id ? { ...p, name, color } : p));
+      if (!supabase) lsSave(players, s.games);
+      else supabase.from('players').update({ name, color }).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      return { players };
+    });
+  },
+
+  deletePlayer: (id) => {
+    set((s) => {
+      const players = s.players.filter((p) => p.id !== id);
+      if (!supabase) lsSave(players, s.games);
+      else supabase.from('players').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      return { players };
+    });
+  },
+
+  addGame: (name, gameType, playerIds, lowerIsBetter) => {
+    const id = genId();
+    const g: Game = {
+      id, name, gameType, playerIds, rounds: [], status: 'active',
+      createdAt: new Date().toISOString(), lowerIsBetter,
+    };
+    set((s) => {
+      const games = [...s.games, g];
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').insert(gameToDb(g)).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+    return id;
+  },
+
+  updateGame: (id, updates) => {
+    set((s) => {
+      const games = s.games.map((g) => (g.id === id ? { ...g, ...updates } : g));
+      const updated = games.find((g) => g.id === id)!;
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  deleteGame: (id) => {
+    set((s) => {
+      const games = s.games.filter((g) => g.id !== id);
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  finishGame: (id) => {
+    set((s) => {
+      const game = s.games.find((g) => g.id === id);
+      if (!game) return s;
+
+      const totals: Record<string, number> = {};
+      for (const pid of game.playerIds) totals[pid] = 0;
+      for (const round of game.rounds)
+        for (const sc of round.scores)
+          totals[sc.playerId] = (totals[sc.playerId] ?? 0) + sc.score;
+
+      const sorted = [...game.playerIds].sort((a, b) =>
+        game.lowerIsBetter ? totals[a] - totals[b] : totals[b] - totals[a]
+      );
+      const best = totals[sorted[0]];
+      const winnerIds = sorted.filter((pid) => totals[pid] === best);
+
+      const updated: Game = { ...game, status: 'finished', finishedAt: new Date().toISOString(), winnerIds };
+      const games = s.games.map((g) => (g.id === id ? updated : g));
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  addRound: (gameId, scores) => {
+    set((s) => {
+      const games = s.games.map((g) => {
+        if (g.id !== gameId) return g;
+        const newRound: Round = { id: genId(), roundNumber: g.rounds.length + 1, scores };
+        return { ...g, rounds: [...g.rounds, newRound] };
+      });
+      const updated = games.find((g) => g.id === gameId)!;
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  updateRound: (gameId, roundId, scores) => {
+    set((s) => {
+      const games = s.games.map((g) => {
+        if (g.id !== gameId) return g;
+        return { ...g, rounds: g.rounds.map((r) => (r.id === roundId ? { ...r, scores } : r)) };
+      });
+      const updated = games.find((g) => g.id === gameId)!;
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  deleteRound: (gameId, roundId) => {
+    set((s) => {
+      const games = s.games.map((g) => {
+        if (g.id !== gameId) return g;
+        const filtered = g.rounds.filter((r) => r.id !== roundId);
+        const renumbered = filtered.map((r, i) => ({ ...r, roundNumber: i + 1 }));
+        return { ...g, rounds: renumbered };
+      });
+      const updated = games.find((g) => g.id === gameId)!;
+      if (!supabase) lsSave(s.players, games);
+      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      return { games };
+    });
+  },
+
+  toggleDarkMode: () =>
+    set((s) => {
+      const darkMode = !s.darkMode;
+      localStorage.setItem('scorer-darkMode', String(darkMode));
+      return { darkMode };
+    }),
+}));

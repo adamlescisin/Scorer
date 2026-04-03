@@ -10,6 +10,12 @@ import Statistics from './pages/Statistics';
 
 export default function App() {
   const darkMode = useGameStore((s) => s.darkMode);
+  const loaded = useGameStore((s) => s.loaded);
+  const initStore = useGameStore((s) => s.initStore);
+
+  useEffect(() => {
+    initStore();
+  }, [initStore]);
 
   useEffect(() => {
     if (darkMode) {
@@ -18,6 +24,17 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [darkMode]);
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-gray-500 dark:text-gray-400 text-sm">Načítání dat…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <BrowserRouter>
