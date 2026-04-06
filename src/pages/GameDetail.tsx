@@ -11,7 +11,18 @@ import {
   TrendingDown,
   Users,
   Hash,
+  LineChart as LineChartIcon,
 } from 'lucide-react';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import { useGameStore } from '../store/gameStore';
 import { Game, Player, RoundScore } from '../types';
 
@@ -60,6 +71,86 @@ function getRankings(game: Game, players: Player[]): { player: Player; total: nu
     if (i > 0 && totals[sorted[i - 1].id] !== totals[p.id]) rank = i + 1;
     return { player: p, total: totals[p.id], rank };
   });
+}
+
+function buildChartData(game: Game, players: Player[]) {
+  const gamePlayers = game.playerIds
+    .map((pid) => players.find((p) => p.id === pid))
+    .filter(Boolean) as Player[];
+
+  const running: Record<string, number> = {};
+  for (const pid of game.playerIds) running[pid] = 0;
+
+  return game.rounds.map((round) => {
+    for (const s of round.scores) {
+      running[s.playerId] = (running[s.playerId] ?? 0) + s.score;
+    }
+    const point: Record<string, number | string> = { name: `${round.roundNumber}` };
+    for (const p of gamePlayers) {
+      point[p.name] = running[p.id];
+    }
+    return point;
+  });
+}
+
+interface ScoreProgressChartProps {
+  game: Game;
+  players: Player[];
+}
+
+function ScoreProgressChart({ game, players }: ScoreProgressChartProps) {
+  const gamePlayers = game.playerIds
+    .map((pid) => players.find((p) => p.id === pid))
+    .filter(Boolean) as Player[];
+
+  const data = buildChartData(game, players);
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-5">
+      <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-5 flex items-center gap-2">
+        <LineChartIcon className="w-5 h-5 text-indigo-500" />
+        Vývoj skóre
+        {game.status === 'active' && (
+          <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 ml-1">
+            živé
+          </span>
+        )}
+      </h2>
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" className="dark:stroke-gray-700" />
+          <XAxis
+            dataKey="name"
+            tick={{ fontSize: 12, fill: '#6b7280' }}
+            label={{ value: 'Kolo', position: 'insideBottomRight', offset: -5, fontSize: 12, fill: '#6b7280' }}
+          />
+          <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} width={40} />
+          <Tooltip
+            contentStyle={{
+              borderRadius: '12px',
+              border: 'none',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+              backgroundColor: 'var(--tooltip-bg, #fff)',
+            }}
+            formatter={(value: number, name: string) => [`${value} bodů`, name]}
+            labelFormatter={(label) => `Kolo ${label}`}
+          />
+          <Legend wrapperStyle={{ paddingTop: '12px', fontSize: '13px' }} />
+          {gamePlayers.map((p) => (
+            <Line
+              key={p.id}
+              type="monotone"
+              dataKey={p.name}
+              stroke={p.color}
+              strokeWidth={2.5}
+              dot={{ r: 4, fill: p.color, strokeWidth: 0 }}
+              activeDot={{ r: 6, fill: p.color, stroke: '#fff', strokeWidth: 2 }}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 interface ScoreModalProps {
@@ -481,6 +572,11 @@ export default function GameDetail() {
           </div>
         </div>
       </div>
+
+      {/* Score progression chart */}
+      {game.rounds.length >= 2 && (
+        <ScoreProgressChart game={game} players={players} />
+      )}
 
       {/* Modals */}
       {showScoreModal && (
