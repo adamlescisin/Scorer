@@ -188,7 +188,7 @@ export const useGameStore = create<GameState>()((set) => ({
       return;
     }
 
-    // Supabase mode
+    // Supabase mode — load from remote, fall back to localStorage on error
     const [{ data: pRows, error: pErr }, { data: gRows, error: gErr }] = await Promise.all([
       supabase.from('players').select('*').order('created_at'),
       supabase.from('games').select('*').order('created_at'),
@@ -196,6 +196,18 @@ export const useGameStore = create<GameState>()((set) => ({
 
     if (pErr) console.error('Supabase players error:', pErr);
     if (gErr) console.error('Supabase games error:', gErr);
+
+    // If Supabase fetch failed, fall back to localStorage
+    if (pErr || gErr) {
+      const stored = lsLoad();
+      if (stored) {
+        set({ players: stored.players, games: stored.games, loaded: true });
+      } else {
+        set({ players: SAMPLE_PLAYERS, games: SAMPLE_GAMES, loaded: true });
+        lsSave(SAMPLE_PLAYERS, SAMPLE_GAMES);
+      }
+      return;
+    }
 
     let players = (pRows ?? []).map(dbToPlayer);
     let games = (gRows ?? []).map(dbToGame);
@@ -208,6 +220,8 @@ export const useGameStore = create<GameState>()((set) => ({
       games = [...SAMPLE_GAMES];
     }
 
+    // Always mirror Supabase data to localStorage for offline resilience
+    lsSave(players, games);
     set({ players, games, loaded: true });
   },
 
@@ -215,8 +229,8 @@ export const useGameStore = create<GameState>()((set) => ({
     const p: Player = { id: genId(), name, color, createdAt: new Date().toISOString() };
     set((s) => {
       const players = [...s.players, p];
-      if (!supabase) lsSave(players, s.games);
-      else supabase.from('players').insert(playerToDb(p)).then(({ error }) => { if (error) console.error(error); });
+      lsSave(players, s.games);
+      if (supabase) supabase.from('players').insert(playerToDb(p)).then(({ error }) => { if (error) console.error(error); });
       return { players };
     });
   },
@@ -224,8 +238,8 @@ export const useGameStore = create<GameState>()((set) => ({
   updatePlayer: (id, name, color) => {
     set((s) => {
       const players = s.players.map((p) => (p.id === id ? { ...p, name, color } : p));
-      if (!supabase) lsSave(players, s.games);
-      else supabase.from('players').update({ name, color }).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      lsSave(players, s.games);
+      if (supabase) supabase.from('players').update({ name, color }).eq('id', id).then(({ error }) => { if (error) console.error(error); });
       return { players };
     });
   },
@@ -233,8 +247,8 @@ export const useGameStore = create<GameState>()((set) => ({
   deletePlayer: (id) => {
     set((s) => {
       const players = s.players.filter((p) => p.id !== id);
-      if (!supabase) lsSave(players, s.games);
-      else supabase.from('players').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      lsSave(players, s.games);
+      if (supabase) supabase.from('players').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
       return { players };
     });
   },
@@ -247,8 +261,8 @@ export const useGameStore = create<GameState>()((set) => ({
     };
     set((s) => {
       const games = [...s.games, g];
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').insert(gameToDb(g)).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').insert(gameToDb(g)).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
     return id;
@@ -258,8 +272,8 @@ export const useGameStore = create<GameState>()((set) => ({
     set((s) => {
       const games = s.games.map((g) => (g.id === id ? { ...g, ...updates } : g));
       const updated = games.find((g) => g.id === id)!;
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
@@ -267,8 +281,8 @@ export const useGameStore = create<GameState>()((set) => ({
   deleteGame: (id) => {
     set((s) => {
       const games = s.games.filter((g) => g.id !== id);
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').delete().eq('id', id).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
@@ -292,8 +306,8 @@ export const useGameStore = create<GameState>()((set) => ({
 
       const updated: Game = { ...game, status: 'finished', finishedAt: new Date().toISOString(), winnerIds };
       const games = s.games.map((g) => (g.id === id ? updated : g));
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').update(gameToDb(updated)).eq('id', id).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
@@ -306,8 +320,8 @@ export const useGameStore = create<GameState>()((set) => ({
         return { ...g, rounds: [...g.rounds, newRound] };
       });
       const updated = games.find((g) => g.id === gameId)!;
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
@@ -319,8 +333,8 @@ export const useGameStore = create<GameState>()((set) => ({
         return { ...g, rounds: g.rounds.map((r) => (r.id === roundId ? { ...r, scores } : r)) };
       });
       const updated = games.find((g) => g.id === gameId)!;
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
@@ -334,8 +348,8 @@ export const useGameStore = create<GameState>()((set) => ({
         return { ...g, rounds: renumbered };
       });
       const updated = games.find((g) => g.id === gameId)!;
-      if (!supabase) lsSave(s.players, games);
-      else supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
+      lsSave(s.players, games);
+      if (supabase) supabase.from('games').update({ rounds: updated.rounds }).eq('id', gameId).then(({ error }) => { if (error) console.error(error); });
       return { games };
     });
   },
